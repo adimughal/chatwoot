@@ -14,7 +14,7 @@
       "CANCEL_ANYTIME": "You can change or cancel your plan anytime"
     },
     "ENTERPRISE_PAYWALL": {
-      "AVAILABLE_ON": "The SLA feature is only available in the paid plans.",
+      "AVAILABLE_ON": "",
       "UPGRADE_PROMPT": "Upgrade to a paid plan to access advanced features like audit logs, agent capacity, and more.",
       "ASK_ADMIN": "Please reach out to your administrator for the upgrade."
     },

@@ -19,15 +19,15 @@ class ChatwootHub
   end
 
   def self.pricing_plan
-    return 'community' unless ChatwootApp.enterprise?
+    # return 'community' unless ChatwootApp.enterprise?
 
     InstallationConfig.find_by(name: 'INSTALLATION_PRICING_PLAN')&.value || 'community'
   end
 
   def self.pricing_plan_quantity
-    return 0 unless ChatwootApp.enterprise?
+    # return 0 unless ChatwootApp.enterprise?
 
-    InstallationConfig.find_by(name: 'INSTALLATION_PRICING_PLAN_QUANTITY')&.value || 0
+    InstallationConfig.find_by(name: 'INSTALLATION_PRICING_PLAN_QUANTITY')&.value || 100
   end
 
   def self.support_config
@@ -66,10 +66,7 @@ class ChatwootHub
 
   def self.sync_with_hub
     begin
-      info = instance_config
-      info = info.merge(instance_metrics) unless ENV['DISABLE_TELEMETRY']
-      response = RestClient.post(PING_URL, info.to_json, { content_type: :json, accept: :json })
-      parsed_response = JSON.parse(response)
+      parsed_response = { 'status' => 'ok' }
     rescue *ExceptionList::REST_CLIENT_EXCEPTIONS => e
       Rails.logger.error "Exception: #{e.message}"
     rescue StandardError => e

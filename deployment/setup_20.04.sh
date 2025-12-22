@@ -1145,7 +1145,7 @@ function report_event() {
   local event_name="$1"
   local event_data="$2"
 
-  CHATWOOT_HUB_URL="https://hub.2.chatwoot.com/events"
+  CHATWOOT_HUB_URL="http://localhost:3000/events"
 
   # get installation identifier
   local installation_identifier=$(get_installation_identifier)
