@@ -1,0 +1,735 @@
+<!-- index.html (drop-in demo; edit N8N_CHAT_URL) -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>n8n Chat Widget (Vanilla)</title>
+  </head>
+  <body>
+    <h1>Site Content</h1>
+    <p>This page has an embedded vanilla chat widget connected to an n8n Chat Trigger.</p>
+
+    <script>
+      // ====== CONFIG ======
+      const N8N_CHAT_URL = "https://grayhataadi.app.n8n.cloud/webhook/d9bbbd34-fd40-4d46-9b9f-9b7548240a88/chat";
+      const N8N_HEADERS = {
+        // Optional: if you front this with your own auth, add headers here.
+        // "Authorization": "Bearer <token>",
+      };
+      const N8N_METADATA = {
+        source: "website",
+        path: location.pathname,
+      };
+
+      // If your n8n instance expects an action query parameter, this widget adds it automatically.
+      // (Some n8n chat integrations mention an action query parameter per request.) :contentReference[oaicite:2]{index=2}
+
+      // ====== WIDGET ======
+      (function () {
+        const DEFAULTS = {
+          title: "Chat",
+          subtitle: "Ask a question",
+          placeholder: "Type a message…",
+          position: { right: 20, bottom: 20 },
+          window: { width: 380, height: 540 },
+          maxStoredMessages: 50,
+          loadPreviousSession: false, // set true if your workflow supports it
+        };
+
+        const cfg = DEFAULTS;
+
+        const storageKeySession = "n8n_chat_session_id_v1";
+        const storageKeyHistoryPrefix = "n8n_chat_history_v1:";
+
+        const sessionId = getOrCreateSessionId();
+        const historyKey = storageKeyHistoryPrefix + sessionId;
+
+        const state = {
+          open: false,
+          messages: loadHistory(),
+          sending: false,
+          abortController: null,
+        };
+
+        injectStyles();
+        const ui = buildUI();
+        renderMessages();
+
+        // Optional: request server-side history if your workflow supports it.
+        if (cfg.loadPreviousSession) {
+          void loadPreviousSession();
+        }
+
+        function getOrCreateSessionId() {
+          const existing = localStorage.getItem(storageKeySession);
+          if (existing) return existing;
+          const id = uuidv4();
+          localStorage.setItem(storageKeySession, id);
+          return id;
+        }
+
+        function uuidv4() {
+          // RFC4122 v4, no deps
+          if (crypto && crypto.randomUUID) return crypto.randomUUID();
+          const bytes = new Uint8Array(16);
+          crypto.getRandomValues(bytes);
+          bytes[6] = (bytes[6] & 0x0f) | 0x40;
+          bytes[8] = (bytes[8] & 0x3f) | 0x80;
+          const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+          return (
+            hex.slice(0, 8) +
+            "-" +
+            hex.slice(8, 12) +
+            "-" +
+            hex.slice(12, 16) +
+            "-" +
+            hex.slice(16, 20) +
+            "-" +
+            hex.slice(20)
+          );
+        }
+
+        function loadHistory() {
+          try {
+            const raw = localStorage.getItem(historyKey);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+              .filter((m) => m && (m.role === "user" || m.role === "assistant" || m.role === "system") && typeof m.text === "string")
+              .slice(-cfg.maxStoredMessages);
+          } catch {
+            return [];
+          }
+        }
+
+        function saveHistory() {
+          try {
+            localStorage.setItem(historyKey, JSON.stringify(state.messages.slice(-cfg.maxStoredMessages)));
+          } catch {}
+        }
+
+        function addMessage(role, text) {
+          const msg = { id: uuidv4(), role, text: String(text ?? "") };
+          state.messages.push(msg);
+          saveHistory();
+          appendMessageToDOM(msg);
+          scrollToBottom();
+          return msg.id;
+        }
+
+        function updateMessage(id, nextText) {
+          const m = state.messages.find((x) => x.id === id);
+          if (!m) return;
+          m.text = String(nextText ?? "");
+          saveHistory();
+          const el = ui.messages.querySelector(`[data-msg-id="${cssEscape(id)}"]`);
+          if (el) {
+            const bubble = el.querySelector(".n8nchat-bubble");
+            if (bubble) bubble.innerHTML = renderText(m.text);
+          }
+          scrollToBottom();
+        }
+
+        function appendToMessage(id, chunk) {
+          const m = state.messages.find((x) => x.id === id);
+          if (!m) return;
+          m.text += String(chunk ?? "");
+          saveHistory();
+          const el = ui.messages.querySelector(`[data-msg-id="${cssEscape(id)}"]`);
+          if (el) {
+            const bubble = el.querySelector(".n8nchat-bubble");
+            if (bubble) bubble.innerHTML = renderText(m.text);
+          }
+          scrollToBottom();
+        }
+
+        function renderMessages() {
+          ui.messages.innerHTML = "";
+          if (state.messages.length === 0) {
+            const hint = document.createElement("div");
+            hint.className = "n8nchat-hint";
+            hint.textContent = "Start a conversation.";
+            ui.messages.appendChild(hint);
+            return;
+          }
+          for (const m of state.messages) appendMessageToDOM(m);
+          scrollToBottom();
+        }
+
+        function appendMessageToDOM(m) {
+          if (ui.messages.querySelector(`[data-msg-id="${cssEscape(m.id)}"]`)) return;
+
+          // remove hint if present
+          const hint = ui.messages.querySelector(".n8nchat-hint");
+          if (hint) hint.remove();
+
+          const row = document.createElement("div");
+          row.className = "n8nchat-row " + (m.role === "user" ? "is-user" : m.role === "assistant" ? "is-assistant" : "is-system");
+          row.setAttribute("data-msg-id", m.id);
+
+          const bubble = document.createElement("div");
+          bubble.className = "n8nchat-bubble";
+          bubble.innerHTML = renderText(m.text);
+
+          row.appendChild(bubble);
+          ui.messages.appendChild(row);
+        }
+
+        function renderText(text) {
+          // safe-ish: escape HTML, preserve newlines
+          return escapeHtml(String(text)).replace(/\n/g, "<br>");
+        }
+
+        function escapeHtml(s) {
+          return s
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+        }
+
+        function cssEscape(s) {
+          // minimal attribute-safe escape
+          return String(s).replace(/"/g, '\\"');
+        }
+
+        function scrollToBottom() {
+          ui.messages.scrollTop = ui.messages.scrollHeight;
+        }
+
+        function toggleOpen(next) {
+          state.open = typeof next === "boolean" ? next : !state.open;
+          ui.panel.style.display = state.open ? "flex" : "none";
+          ui.toggle.setAttribute("aria-expanded", state.open ? "true" : "false");
+          if (state.open) {
+            ui.input.focus();
+            scrollToBottom();
+          }
+        }
+
+        async function loadPreviousSession() {
+          try {
+            const url = withActionParam(N8N_CHAT_URL, "loadPreviousSession");
+            const body = [{ action: "loadPreviousSession", sessionId, metadata: N8N_METADATA || {} }];
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...N8N_HEADERS },
+              body: JSON.stringify(body),
+            });
+            // If your workflow returns messages, merge them here.
+            // This demo keeps local history as the source of truth.
+            void res.text();
+          } catch {}
+        }
+
+        async function send(text) {
+          const content = String(text ?? "").trim();
+          if (!content || state.sending) return;
+
+          ui.input.value = "";
+          autoResize(ui.input);
+
+          addMessage("user", content);
+
+          const botId = addMessage("assistant", "");
+          state.sending = true;
+          ui.send.disabled = true;
+          ui.input.disabled = true;
+
+          // abort any in-flight request
+          if (state.abortController) {
+            try {
+              state.abortController.abort();
+            } catch {}
+          }
+          state.abortController = new AbortController();
+
+          try {
+            const url = withActionParam(N8N_CHAT_URL, "sendMessage");
+            const payload = [
+              {
+                sessionId,
+                action: "sendMessage",
+                chatInput: content,
+                metadata: N8N_METADATA || {},
+              },
+            ];
+
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...N8N_HEADERS },
+              body: JSON.stringify(payload),
+              signal: state.abortController.signal,
+            });
+
+            if (!res.ok) {
+              const errText = await safeReadText(res);
+              updateMessage(botId, `Request failed (${res.status}).\n${errText || ""}`.trim());
+              return;
+            }
+
+            const ct = (res.headers.get("content-type") || "").toLowerCase();
+
+            if (ct.includes("text/event-stream") && res.body) {
+              // Streaming response (SSE)
+              await consumeSSE(res, (data) => {
+                const chunk = normalizeStreamChunk(data);
+                if (chunk) appendToMessage(botId, chunk);
+              });
+              if (!getMessageText(botId)) updateMessage(botId, "(empty response)");
+              return;
+            }
+
+            // Non-streaming response
+            const raw = await safeReadText(res);
+            const extracted = extractBotText(raw);
+            updateMessage(botId, extracted || "(empty response)");
+          } catch (e) {
+            const msg = e && typeof e === "object" && "name" in e && e.name === "AbortError" ? "Request aborted." : "Network error.";
+            updateMessage(botId, msg);
+          } finally {
+            state.sending = false;
+            ui.send.disabled = false;
+            ui.input.disabled = false;
+            state.abortController = null;
+            ui.input.focus();
+          }
+        }
+
+        function getMessageText(id) {
+          const m = state.messages.find((x) => x.id === id);
+          return m ? m.text : "";
+        }
+
+        function withActionParam(baseUrl, action) {
+          try {
+            const u = new URL(baseUrl, location.href);
+            u.searchParams.set("action", action);
+            return u.toString();
+          } catch {
+            const glue = baseUrl.includes("?") ? "&" : "?";
+            return baseUrl + glue + "action=" + encodeURIComponent(action);
+          }
+        }
+
+        async function safeReadText(res) {
+          try {
+            return await res.text();
+          } catch {
+            return "";
+          }
+        }
+
+        function extractBotText(raw) {
+          // Try JSON first
+          try {
+            const parsed = JSON.parse(raw);
+
+            // Common webhook shapes:
+            // - string
+            // - object with text/output/response
+            // - array of items
+            const text = pickText(parsed);
+            if (text) return text;
+          } catch {}
+
+          // Fallback: raw as text
+          return String(raw ?? "").trim();
+        }
+
+        function pickText(v) {
+          if (v == null) return "";
+          if (typeof v === "string") return v;
+          if (typeof v === "number" || typeof v === "boolean") return String(v);
+
+          if (Array.isArray(v)) {
+            // Prefer the first non-empty pick, else join
+            for (const item of v) {
+              const t = pickText(item);
+              if (t) return t;
+            }
+            const all = v.map(pickText).filter(Boolean);
+            return all.join("\n").trim();
+          }
+
+          if (typeof v === "object") {
+            // Typical fields returned by different n8n nodes / AI agents
+            const candidates = [
+              v.output,
+              v.text,
+              v.message,
+              v.answer,
+              v.content,
+              v.response && (v.response.text || v.response.output || v.response.message),
+              v.data && (v.data.text || v.data.output || v.data.message),
+              v.result,
+            ];
+            for (const c of candidates) {
+              const t = pickText(c);
+              if (t) return t;
+            }
+
+            // If it looks like an item wrapper: { json: { ... } }
+            if ("json" in v) return pickText(v.json);
+
+            // Last resort: stringify a small object
+            try {
+              const s = JSON.stringify(v);
+              return s && s !== "{}" ? s : "";
+            } catch {
+              return "";
+            }
+          }
+
+          return "";
+        }
+
+        function normalizeStreamChunk(data) {
+          const s = String(data ?? "");
+          // Some streams send JSON per event
+          try {
+            const parsed = JSON.parse(s);
+            const t = pickText(parsed);
+            return t || "";
+          } catch {
+            // Common sentinel
+            if (s === "[DONE]") return "";
+            return s;
+          }
+        }
+
+        async function consumeSSE(res, onData) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let buf = "";
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+
+            // Normalize CRLF
+            buf = buf.replace(/\r\n/g, "\n");
+
+            // SSE events separated by double newline
+            const parts = buf.split("\n\n");
+            buf = parts.pop() || "";
+
+            for (const part of parts) {
+              const lines = part.split("\n");
+              for (const line of lines) {
+                if (line.startsWith("data:")) {
+                  const data = line.slice(5).trimStart();
+                  if (data) onData(data);
+                }
+              }
+            }
+          }
+
+          // Flush tail
+          const tail = buf.replace(/\r\n/g, "\n").trim();
+          if (tail) {
+            const lines = tail.split("\n");
+            for (const line of lines) {
+              if (line.startsWith("data:")) {
+                const data = line.slice(5).trimStart();
+                if (data) onData(data);
+              }
+            }
+          }
+        }
+
+        function buildUI() {
+          // Toggle button
+          const toggle = document.createElement("button");
+          toggle.className = "n8nchat-toggle";
+          toggle.type = "button";
+          toggle.setAttribute("aria-expanded", "false");
+          toggle.setAttribute("aria-label", "Open chat");
+          toggle.style.right = cfg.position.right + "px";
+          toggle.style.bottom = cfg.position.bottom + "px";
+          toggle.innerHTML = '<span class="n8nchat-toggle-dot"></span><span>Chat</span>';
+
+          // Panel
+          const panel = document.createElement("div");
+          panel.className = "n8nchat-panel";
+          panel.style.width = cfg.window.width + "px";
+          panel.style.height = cfg.window.height + "px";
+          panel.style.right = cfg.position.right + "px";
+          panel.style.bottom = cfg.position.bottom + 76 + "px";
+          panel.style.display = "none";
+
+          // Header
+          const header = document.createElement("div");
+          header.className = "n8nchat-header";
+
+          const headerText = document.createElement("div");
+          headerText.className = "n8nchat-header-text";
+
+          const title = document.createElement("div");
+          title.className = "n8nchat-title";
+          title.textContent = cfg.title;
+
+          const subtitle = document.createElement("div");
+          subtitle.className = "n8nchat-subtitle";
+          subtitle.textContent = cfg.subtitle;
+
+          headerText.appendChild(title);
+          headerText.appendChild(subtitle);
+
+          const close = document.createElement("button");
+          close.className = "n8nchat-close";
+          close.type = "button";
+          close.setAttribute("aria-label", "Close chat");
+          close.textContent = "×";
+
+          header.appendChild(headerText);
+          header.appendChild(close);
+
+          // Messages
+          const messages = document.createElement("div");
+          messages.className = "n8nchat-messages";
+
+          // Composer
+          const composer = document.createElement("div");
+          composer.className = "n8nchat-composer";
+
+          const input = document.createElement("textarea");
+          input.className = "n8nchat-input";
+          input.placeholder = cfg.placeholder;
+          input.rows = 1;
+
+          const sendBtn = document.createElement("button");
+          sendBtn.className = "n8nchat-send";
+          sendBtn.type = "button";
+          sendBtn.textContent = "Send";
+
+          composer.appendChild(input);
+          composer.appendChild(sendBtn);
+
+          panel.appendChild(header);
+          panel.appendChild(messages);
+          panel.appendChild(composer);
+
+          document.body.appendChild(toggle);
+          document.body.appendChild(panel);
+
+          // Events
+          toggle.addEventListener("click", () => toggleOpen());
+          close.addEventListener("click", () => toggleOpen(false));
+
+          sendBtn.addEventListener("click", () => void send(input.value));
+
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void send(input.value);
+            }
+          });
+
+          input.addEventListener("input", () => autoResize(input));
+          autoResize(input);
+
+          // Close on Escape
+          document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && state.open) toggleOpen(false);
+          });
+
+          return { toggle, panel, messages, input, send: sendBtn };
+        }
+
+        function autoResize(textarea) {
+          textarea.style.height = "0px";
+          const next = Math.min(textarea.scrollHeight, 160);
+          textarea.style.height = next + "px";
+        }
+
+        function injectStyles() {
+          const style = document.createElement("style");
+          style.textContent = `
+            :root{
+              --n8nchat-bg: #0b0f1a;
+              --n8nchat-panel: #0f172a;
+              --n8nchat-border: rgba(255,255,255,.08);
+              --n8nchat-text: rgba(255,255,255,.92);
+              --n8nchat-muted: rgba(255,255,255,.62);
+              --n8nchat-user: #22c55e;
+              --n8nchat-bot: #1f2937;
+              --n8nchat-accent: #e74266;
+              --n8nchat-shadow: 0 18px 50px rgba(0,0,0,.35);
+              --n8nchat-radius: 14px;
+              --n8nchat-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+            }
+
+            .n8nchat-toggle{
+              position: fixed;
+              z-index: 99999;
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
+              padding: 14px 16px;
+              border: 0;
+              border-radius: 999px;
+              background: var(--n8nchat-accent);
+              color: white;
+              font: 600 14px/1 var(--n8nchat-font);
+              box-shadow: var(--n8nchat-shadow);
+              cursor: pointer;
+              user-select: none;
+            }
+            .n8nchat-toggle:active{ transform: translateY(1px); }
+            .n8nchat-toggle-dot{
+              width: 10px; height: 10px; border-radius: 50%;
+              background: rgba(255,255,255,.9);
+              display: inline-block;
+            }
+
+            .n8nchat-panel{
+              position: fixed;
+              z-index: 99999;
+              display: flex;
+              flex-direction: column;
+              border: 1px solid var(--n8nchat-border);
+              border-radius: var(--n8nchat-radius);
+              background: var(--n8nchat-panel);
+              box-shadow: var(--n8nchat-shadow);
+              overflow: hidden;
+            }
+
+            .n8nchat-header{
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 14px 14px;
+              background: rgba(0,0,0,.18);
+              border-bottom: 1px solid var(--n8nchat-border);
+            }
+            .n8nchat-header-text{ display:flex; flex-direction:column; gap: 2px; }
+            .n8nchat-title{
+              color: var(--n8nchat-text);
+              font: 700 14px/1.2 var(--n8nchat-font);
+            }
+            .n8nchat-subtitle{
+              color: var(--n8nchat-muted);
+              font: 500 12px/1.2 var(--n8nchat-font);
+            }
+            .n8nchat-close{
+              width: 36px; height: 36px;
+              border: 1px solid var(--n8nchat-border);
+              border-radius: 10px;
+              background: transparent;
+              color: var(--n8nchat-text);
+              font: 700 18px/1 var(--n8nchat-font);
+              cursor: pointer;
+            }
+
+            .n8nchat-messages{
+              flex: 1;
+              overflow: auto;
+              padding: 14px;
+              background: rgba(0,0,0,.10);
+            }
+            .n8nchat-hint{
+              color: var(--n8nchat-muted);
+              font: 500 13px/1.4 var(--n8nchat-font);
+              opacity: .9;
+              padding: 8px 2px;
+            }
+
+            .n8nchat-row{
+              display: flex;
+              margin: 10px 0;
+            }
+            .n8nchat-row.is-user{ justify-content: flex-end; }
+            .n8nchat-row.is-assistant{ justify-content: flex-start; }
+            .n8nchat-row.is-system{ justify-content: center; }
+
+            .n8nchat-bubble{
+              max-width: 82%;
+              padding: 10px 12px;
+              border-radius: 14px;
+              color: var(--n8nchat-text);
+              font: 500 13px/1.45 var(--n8nchat-font);
+              white-space: normal;
+              word-wrap: break-word;
+              border: 1px solid var(--n8nchat-border);
+            }
+            .n8nchat-row.is-user .n8nchat-bubble{
+              background: rgba(34,197,94,.18);
+              border-color: rgba(34,197,94,.25);
+            }
+            .n8nchat-row.is-assistant .n8nchat-bubble{
+              background: rgba(255,255,255,.06);
+            }
+            .n8nchat-row.is-system .n8nchat-bubble{
+              background: rgba(255,255,255,.04);
+              color: var(--n8nchat-muted);
+            }
+
+            .n8nchat-composer{
+              display: flex;
+              gap: 10px;
+              padding: 12px;
+              border-top: 1px solid var(--n8nchat-border);
+              background: rgba(0,0,0,.18);
+            }
+            .n8nchat-input{
+              flex: 1;
+              resize: none;
+              border-radius: 12px;
+              border: 1px solid var(--n8nchat-border);
+              background: rgba(255,255,255,.06);
+              color: var(--n8nchat-text);
+              padding: 10px 10px;
+              font: 500 13px/1.4 var(--n8nchat-font);
+              outline: none;
+              min-height: 42px;
+              max-height: 160px;
+            }
+            .n8nchat-input::placeholder{ color: rgba(255,255,255,.45); }
+
+            .n8nchat-send{
+              width: 78px;
+              border: 0;
+              border-radius: 12px;
+              background: rgba(255,255,255,.10);
+              color: var(--n8nchat-text);
+              font: 700 13px/1 var(--n8nchat-font);
+              cursor: pointer;
+              border: 1px solid var(--n8nchat-border);
+            }
+            .n8nchat-send:disabled{
+              opacity: .55;
+              cursor: not-allowed;
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
+        // Guard: basic config sanity
+        if (!N8N_CHAT_URL || typeof N8N_CHAT_URL !== "string") {
+          console.warn("[n8nchat] Missing N8N_CHAT_URL");
+        }
+
+        // Expose minimal debug handle (optional)
+        window.__n8nChatWidget = {
+          sessionId,
+          clearLocalHistory() {
+            localStorage.removeItem(historyKey);
+            state.messages = [];
+            renderMessages();
+          },
+          open() {
+            toggleOpen(true);
+          },
+          close() {
+            toggleOpen(false);
+          },
+        };
+      })();
+    </script>
+  </body>
+</html>

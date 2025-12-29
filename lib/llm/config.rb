@@ -8,10 +8,15 @@ module Llm::Config
     end
 
     def initialize!
-      return if @initialized
+      current_api_key = system_api_key
+      current_endpoint = openai_endpoint
+
+      return if @initialized && @system_api_key == current_api_key && @openai_endpoint == current_endpoint
 
       configure_ruby_llm
       @initialized = true
+      @system_api_key = current_api_key
+      @openai_endpoint = current_endpoint
     end
 
     def reset!
@@ -31,8 +36,8 @@ module Llm::Config
 
     def configure_ruby_llm
       RubyLLM.configure do |config|
-        config.openai_api_key = system_api_key if system_api_key.present?
-        config.openai_api_base = openai_endpoint.chomp('/') if openai_endpoint.present?
+        config.openai_api_key = system_api_key
+        config.openai_api_base = openai_endpoint&.chomp('/')
         config.logger = Rails.logger
       end
     end

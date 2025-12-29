@@ -2,6 +2,8 @@ module Concerns::Agentable
   extend ActiveSupport::Concern
 
   def agent
+    AiAgentsConfig.configure!
+
     Agents::Agent.new(
       name: agent_name,
       instructions: ->(context) { agent_instructions(context) },
